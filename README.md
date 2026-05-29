@@ -35,6 +35,15 @@ composer run dev
 
 The app will be available at **http://localhost:8000**.
 
+## Running with Docker
+
+```bash
+cp .env.example .env
+docker compose up --build
+```
+
+The app will be available at **http://localhost:8000**. Migrations run automatically on start. The SQLite database is persisted in `./database/` via a volume mount.
+
 ## Stack
 
 | Layer | Tech |

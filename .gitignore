@@ -28,6 +28,10 @@ yarn-error.log
 /.vscode
 /.zed
 
+/database/*.sqlite
+/database/*.sqlite-shm
+/database/*.sqlite-wal
+
 # AI tools
 .claude
 /.agents
