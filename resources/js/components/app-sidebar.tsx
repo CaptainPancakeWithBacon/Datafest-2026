@@ -27,7 +27,7 @@ const mainNavItems: NavItem[] = [
         icon: BarChart2,
     },
     {
-        title: 'Challenge 2 — Sector Deep Dive',
+        title: 'Challenge 2 — Zeeland',
         href: '/challenges/2',
         icon: Building2,
     },

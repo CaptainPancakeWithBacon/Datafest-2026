@@ -18,10 +18,10 @@ const challenges = [
         n: 2,
         href: '/challenges/2',
         Icon: Building2,
-        title: 'Sector Deep Dive',
-        level: 'Intermediate',
+        title: 'Zeeland — From Province to Postcode',
+        level: 'Beginner–Intermediate',
         description:
-            'Which sectors are driving the transition and which are lagging? Disaggregate national energy data by sector — electricity, industry, transport, and buildings.',
+            'Read Zeeland\'s energy story from Stedin microdata — electricity and gas connections across every postal code from 2013 to 2025. Map solar adoption, quantify consumption trends, and project when Zeeland goes net-positive.',
         accent: 'border-t-blue-500',
     },
     {
