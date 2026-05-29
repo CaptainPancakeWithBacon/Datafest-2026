@@ -2,24 +2,22 @@
 
 namespace App\Services;
 
-use Illuminate\Support\Facades\File;
+use Illuminate\Support\Facades\Cache;
+use PhpOffice\PhpSpreadsheet\IOFactory;
+use PhpOffice\PhpSpreadsheet\Spreadsheet;
 
 class EnergyDataService
 {
+    private const XLSX = 'energie-en-broeikasgassen.xlsx';
+
     private array $data;
 
     public function __construct()
     {
-        $path = storage_path('app/energy-data.json');
-
-        if (File::exists($path)) {
-            $this->data = json_decode(File::get($path), true);
-        } else {
-            $this->data = $this->fallback();
-        }
+        $this->data = Cache::rememberForever('energy_data', fn () => $this->parse());
     }
 
-    // ── Mix (Tabel 1b) ────────────────────────────────────────────────────────
+    // ── Public API ─────────────────────────────────────────────────────────────
 
     public function getMixYears(): array
     {
@@ -83,12 +81,8 @@ class EnergyDataService
 
     public function getScoreYears(): array
     {
-        $years = $this->getMixYears();
-
-        return array_slice($years, 1);
+        return array_slice($this->getMixYears(), 1);
     }
-
-    // ── Electricity (Tabel 5) ─────────────────────────────────────────────────
 
     public function getElecYears(): array
     {
@@ -125,8 +119,6 @@ class EnergyDataService
         return $this->data['electricity']['nuclear'];
     }
 
-    // ── GHG (Tabel 6a) ────────────────────────────────────────────────────────
-
     public function getGhg(): array
     {
         return $this->data['ghg']['total'];
@@ -142,14 +134,195 @@ class EnergyDataService
         return $this->data['ghg']['by_sector'] ?? [];
     }
 
-    // ── Final energy by sector (Tabel 3b) ────────────────────────────────────
-
     public function getFinalBySector(): array
     {
         return $this->data['final_by_sector'] ?? [];
     }
 
-    // ── Fallback (hardcoded 1990-2024) ────────────────────────────────────────
+    // ── Parser ─────────────────────────────────────────────────────────────────
+
+    private function parse(): array
+    {
+        $path = base_path('data/'.self::XLSX);
+
+        if (! file_exists($path)) {
+            return $this->fallback();
+        }
+
+        $wb = IOFactory::load($path);
+
+        return [
+            'mix' => $this->parseMix($wb),
+            'electricity' => $this->parseElectricity($wb),
+            'ghg' => $this->parseGhg($wb),
+            'final_by_sector' => $this->parseFinalBySector($wb),
+        ];
+    }
+
+    private function sheetRows(Spreadsheet $wb, string $name): array
+    {
+        $ws = $wb->getSheetByName($name);
+        $rows = [];
+
+        foreach ($ws->getRowIterator(2) as $row) { // skip header
+            $cells = [];
+            foreach ($row->getCellIterator('A', 'D') as $cell) {
+                $cells[] = $cell->getValue();
+            }
+            if (array_filter($cells) === []) {
+                continue;
+            }
+            $rows[] = $cells;
+        }
+
+        return $rows;
+    }
+
+    private function extractSeries(array $rows, int $balanspostCol, string $balanspost, int $carrierCol, string $carrier, int $yearCol = 0, int $valueCol = 3): array
+    {
+        $out = [];
+
+        foreach ($rows as $r) {
+            if ($r[$balanspostCol] === $balanspost && $r[$carrierCol] === $carrier) {
+                $out[(int) $r[$yearCol]] = (float) $r[$valueCol];
+            }
+        }
+
+        ksort($out);
+
+        return array_values($out);
+    }
+
+    private function extractYears(array $rows, int $balanspostCol, string $balanspost): array
+    {
+        $years = [];
+
+        foreach ($rows as $r) {
+            if ($r[$balanspostCol] === $balanspost) {
+                $years[(int) $r[0]] = true;
+            }
+        }
+
+        ksort($years);
+
+        return array_keys($years);
+    }
+
+    private function parseMix(Spreadsheet $wb): array
+    {
+        $rows = $this->sheetRows($wb, 'Tabel1bAanbodUitvoer&Verbruik');
+        $bp = 'Totaal energieverbruik';
+
+        $get = fn ($carrier) => $this->extractSeries($rows, 1, $bp, 2, $carrier);
+
+        $gas = $get('Aardgas');
+        $oil = $get('Aardoliegrondstoffen en producten');
+        $coal = $get('Kool en koolproducten');
+        $nuke = $get('Kernenergie');
+        $ren = $get('Hernieuwbare energie');
+        $tot = $get('Totaal energiedragers');
+
+        return [
+            'years' => $this->extractYears($rows, 1, $bp),
+            'gas' => $gas,
+            'oil' => $oil,
+            'coal' => $coal,
+            'nuclear' => $nuke,
+            'renewable' => $ren,
+            'total' => $tot,
+        ];
+    }
+
+    private function parseElectricity(Spreadsheet $wb): array
+    {
+        $rows = $this->sheetRows($wb, 'Tabel5AanbodElektriciteit');
+        $bp = 'BrutoProductie';
+
+        $get = fn ($carrier) => $this->extractSeries($rows, 1, $bp, 2, $carrier);
+
+        return [
+            'years' => $this->extractYears($rows, 1, $bp),
+            'wind' => $get('Windenergie'),
+            'solar' => $get('Zonne-energie'),
+            'biomass' => $get('Biomassa'),
+            'gas' => $get('Aardgas'),
+            'coal' => $get('Steenkool'),
+            'nuclear' => $get('Kernenergie'),
+            'total' => $get('Totaal energiedragers'),
+        ];
+    }
+
+    private function parseGhg(Spreadsheet $wb): array
+    {
+        $rows = $this->sheetRows($wb, 'Tabel6aEmissieNaarSector');
+        $totaal = [];
+        $bySector = [];
+
+        foreach ($rows as $r) {
+            if ($r[1] !== 'TotaalBroeikasgassen') {
+                continue;
+            }
+            $year = (int) $r[0];
+            $sector = $r[2];
+            $val = (float) $r[3];
+
+            if ($sector === 'TotaalSectoren') {
+                $totaal[$year] = $val;
+            } else {
+                $bySector[$sector][$year] = $val;
+            }
+        }
+
+        ksort($totaal);
+        $years = array_keys($totaal);
+        $target = array_map(fn ($y) => round(227.5 - (227.5 - 102.4) * ($y - 1990) / 40, 1), $years);
+
+        $bySectorSorted = [];
+        foreach ($bySector as $sector => $vals) {
+            ksort($vals);
+            $bySectorSorted[$sector] = array_values($vals);
+        }
+
+        return [
+            'years' => $years,
+            'total' => array_values($totaal),
+            'target' => $target,
+            'by_sector' => $bySectorSorted,
+        ];
+    }
+
+    private function parseFinalBySector(Spreadsheet $wb): array
+    {
+        $rows = $this->sheetRows($wb, 'Tabel3bFinaalEnergieverbruik');
+        $result = [];
+
+        foreach ($rows as $r) {
+            if ($r[2] !== 'Totaal energiedragers') {
+                continue;
+            }
+            $sector = $r[1];
+            $year = (int) $r[0];
+            $result[$sector][$year] = (float) $r[3];
+        }
+
+        $out = [];
+
+        foreach ($result as $sector => $vals) {
+            ksort($vals);
+            $out[$sector] = array_values($vals);
+        }
+
+        $years = [];
+        if (! empty($result)) {
+            $first = reset($result);
+            ksort($first);
+            $years = array_keys($first);
+        }
+
+        return array_merge(['years' => $years], $out);
+    }
+
+    // ── Hardcoded fallback (no Excel present) ─────────────────────────────────
 
     private function fallback(): array
     {
@@ -161,10 +334,7 @@ class EnergyDataService
         $tot = array_map(fn ($i) => $gas[$i] + $oil[$i] + $coal[$i] + $nuke[$i] + $ren[$i], range(0, 34));
 
         return [
-            'mix' => [
-                'years' => range(1990, 2024), 'gas' => $gas, 'oil' => $oil,
-                'coal' => $coal, 'nuclear' => $nuke, 'renewable' => $ren, 'total' => $tot,
-            ],
+            'mix' => ['years' => range(1990, 2024), 'gas' => $gas, 'oil' => $oil, 'coal' => $coal, 'nuclear' => $nuke, 'renewable' => $ren, 'total' => $tot],
             'electricity' => [
                 'years' => range(2000, 2024),
                 'wind' => [3, 3, 3.4, 4.7, 6.7, 7.4, 9.8, 12.4, 15.3, 16.5, 14.4, 18.4, 17.9, 20.3, 20.9, 27.2, 29.4, 38, 38, 41.4, 55, 65.2, 77.6, 106.3, 120.6],

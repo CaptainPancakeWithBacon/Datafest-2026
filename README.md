@@ -62,8 +62,4 @@ Open **http://localhost:8000**.
 ## Data
 
 CBS Statline — Energie en broeikasgassen 1990–2024 (Tabel 1b, 5, 6a, 3b).
-
-To regenerate the parsed data from the source Excel:
-```bash
-php artisan energy:parse /path/to/energie\ en\ broeikasgassen\ 1990-2024.xlsx
-```
+The Excel file is included in `data/` and read directly by the app at boot (cached in memory).
