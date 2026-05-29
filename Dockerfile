@@ -7,16 +7,20 @@ COPY --from=composer:latest /usr/bin/composer /usr/bin/composer
 
 WORKDIR /app
 
+# Install PHP deps first (cached unless composer.json/lock change)
 COPY composer.json composer.lock ./
-RUN composer install --no-dev --optimize-autoloader --no-interaction
+RUN composer install --no-dev --optimize-autoloader --no-interaction --no-scripts
 
+# Install JS deps (cached unless package.json/lock change)
 COPY package*.json ./
 RUN npm install
 
+# Copy full app, then finish setup and build
 COPY . .
-# Provide a minimal env so Laravel can bootstrap for wayfinder:generate
-RUN cp .env.example .env && php artisan key:generate --no-interaction
-RUN npm run build
+RUN cp .env.example .env && \
+    php artisan key:generate --no-interaction && \
+    php artisan package:discover --ansi && \
+    npm run build
 
 # Final stage: PHP only
 FROM php:8.4-cli-alpine
