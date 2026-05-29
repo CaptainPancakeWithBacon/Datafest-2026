@@ -28,6 +28,7 @@ RUN mkdir -p bootstrap/cache \
     cp .env.example .env && \
     php artisan key:generate --no-interaction && \
     php artisan package:discover --ansi && \
+    php artisan wayfinder:generate --with-form 2>&1 && \
     npm run build
 
 # Final stage: PHP only
