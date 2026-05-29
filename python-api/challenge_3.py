@@ -1,173 +1,176 @@
 """
-Challenge 3 — 2030 Target Tracker
-Advanced scenario explorer: project Dutch energy transition to 2030 and beyond.
+Challenge 3 — Zeeland Industrial Decarbonisation Simulator
+
+Challenge 2 showed the gap: Zeeland industry uses ~75 PJ/yr while all
+renewable generation covers only ~9 %.  Challenge 3 asks: what combination
+of levers closes that gap, and by when?
+
+Levers:
+  renewable_growth_tj_per_yr  – extra TJ of wind/solar added each year
+  electrification_pct_per_yr  – % of remaining gas demand shifted to
+                                 electricity each year (needs clean power)
+  hydrogen_pct_per_yr         – % of remaining gas demand replaced by
+                                 green hydrogen each year
+  efficiency_pct_per_yr       – % annual reduction in total industrial demand
 """
 
 from functools import lru_cache
 from pathlib import Path
 
 import numpy as np
-import pandas as pd
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 from pydantic import BaseModel
 
 router = APIRouter(prefix="/api/challenge-3", tags=["Challenge 3"])
 
-XLSX = Path(__file__).parent.parent / "data" / "energie-en-broeikasgassen.xlsx"
+# ── Baselines from Challenge 2 (Klimaatmonitor 2024) ─────────────────────────
+# These are the most recent reliable data points extracted by challenge_2.py
+IND_TOTAL_TJ    = 75_450.0   # total industrial energy 2024
+IND_GAS_TJ      = 70_507.0   # gas component 2024
+IND_ELEC_TJ     =  4_943.0   # electricity component 2024
+REN_GEN_TJ      =  7_002.0   # total renewable generation Zeeland 2024
+BASELINE_YEAR   = 2024
 
 
 @lru_cache(maxsize=1)
-def _baselines() -> dict:
-    if not XLSX.exists():
-        raise FileNotFoundError(str(XLSX))
-    xl = pd.ExcelFile(XLSX)
-
-    df1b = xl.parse("Tabel1bAanbodUitvoer&Verbruik", header=0)
-    df1b.columns = ["jaar", "balanspost", "energiedrager", "waarde"]
-    tv = df1b[df1b["balanspost"] == "Totaal energieverbruik"]
-
-    def last(carrier):
-        return float(tv[tv["energiedrager"] == carrier].sort_values("jaar")["waarde"].iloc[-1])
-
-    df5 = xl.parse("Tabel5AanbodElektriciteit", header=0)
-    df5.columns = ["jaar", "balanspost", "energiebron", "waarde"]
-    bp = df5[df5["balanspost"] == "BrutoProductie"]
-
-    def last5(carrier):
-        return float(bp[bp["energiebron"] == carrier].sort_values("jaar")["waarde"].iloc[-1])
-
-    df6 = xl.parse("Tabel6aEmissieNaarSector", header=0)
-    df6.columns = ["jaar", "broeikasgas", "sector", "emissie"]
-    ghg_series = (
-        df6[(df6["broeikasgas"] == "TotaalBroeikasgassen") & (df6["sector"] == "TotaalSectoren")]
-        .sort_values("jaar")
-    )
-    ghg_vals   = ghg_series["emissie"].tolist()
-    ghg_years  = ghg_series["jaar"].tolist()
-
-    ren_series = tv[tv["energiedrager"] == "Hernieuwbare energie"].sort_values("jaar")["waarde"].tolist()
-    tot_series = tv[tv["energiedrager"] == "Totaal energiedragers"].sort_values("jaar")["waarde"].tolist()
-    mix_years  = sorted(tv["jaar"].unique().tolist())
-    ren_share  = [round(r / t * 100, 2) if t else 0 for r, t in zip(ren_series, tot_series)]
-
-    return {
-        "renewable":    last("Hernieuwbare energie"),
-        "total":        last("Totaal energiedragers"),
-        "ghg":          ghg_vals[-1],
-        "wind":         last5("Windenergie"),
-        "solar":        last5("Zonne-energie"),
-        "elec_total":   last5("Totaal energiedragers"),
-        "ren_share_series": ren_share,
-        "mix_years":    mix_years,
-        "ghg_series":   ghg_vals,
-        "ghg_years":    ghg_years,
-    }
+def _historical_coverage() -> dict:
+    """
+    Historical coverage % derived from Challenge 2 data.
+    Hardcoded from the _load() output to avoid recalculating.
+    """
+    years    = [2010,2011,2012,2013,2014,2015,2016,2017,2018,2021,2022,2024]
+    ind      = [109978,118267,110571,106831,86080,93807,92014,94739,91882,84963,65364,75450]
+    ren_gen  = [  1476, 1627, 1775, 2261, 2653, 2869, 2740, 2599, 3424, 4392, 4493, 7002]
+    coverage = [round(r / i * 100, 1) for r, i in zip(ren_gen, ind)]
+    return {"years": years, "ind_tj": ind, "ren_gen_tj": ren_gen, "coverage_pct": coverage}
 
 
-class SimulateRequest(BaseModel):
-    wind_growth: float = 12.0    # PJ/yr
-    solar_growth: float = 10.0   # PJ/yr
-    gas_reduction: float = 20.0  # PJ/yr
-    horizon: int = 2030
+class SimRequest(BaseModel):
+    renewable_growth_tj_per_yr: float = 500.0
+    electrification_pct_per_yr: float = 1.0
+    hydrogen_pct_per_yr:        float = 0.5
+    efficiency_pct_per_yr:      float = 1.0
+    horizon: int = 2050
 
 
 @router.post("/simulate")
-def simulate(req: SimulateRequest):
-    """
-    Project Dutch energy transition from 2024 to req.horizon.
-    Uses real 2024 baselines from the CBS Excel.
-    Includes linear trend analysis on the last 10 years of historical data.
-    """
-    b = _baselines()
-    steps = req.horizon - 2024
-    if steps <= 0:
-        raise HTTPException(400, "horizon must be after 2024")
+def simulate(req: SimRequest):
+    steps = req.horizon - BASELINE_YEAR
+    if steps <= 0 or steps > 60:
+        return {"error": "horizon must be 2025–2084"}
 
-    proj_years, ren_share, ghg_proj, wind_proj, solar_proj, elec_ren = [], [], [], [], [], []
+    # Mutable state
+    ind_total = IND_TOTAL_TJ
+    ind_gas   = IND_GAS_TJ
+    ind_elec  = IND_ELEC_TJ
+    ren_gen   = REN_GEN_TJ
+
+    years, total_l, gas_l, elec_l, h2_l, ren_l, coverage_l, fossil_pct_l = (
+        [BASELINE_YEAR], [ind_total], [ind_gas], [ind_elec],
+        [0.0], [ren_gen],
+        [round(ren_gen / ind_total * 100, 1)],
+        [round((ind_gas + ind_elec) / ind_total * 100, 1)],
+    )
+
+    cumulative_h2 = 0.0
+
     for s in range(1, steps + 1):
-        new_ren        = b["renewable"] + (req.wind_growth + req.solar_growth) * s
-        new_total      = max(b["total"] - req.gas_reduction * s * 0.5, 1000.0)
-        new_ghg        = b["ghg"] - req.gas_reduction * s * 0.056 - (req.wind_growth + req.solar_growth) * s * 0.01
-        new_wind       = b["wind"] + req.wind_growth * s
-        new_solar      = b["solar"] + req.solar_growth * s
-        new_elec_total = max(b["elec_total"] - req.gas_reduction * s * 0.3, 200.0)
+        # 1. Efficiency shrinks overall demand
+        ind_total *= (1 - req.efficiency_pct_per_yr / 100)
 
-        proj_years.append(2024 + s)
-        ren_share.append(round(min(new_ren / new_total * 100, 100), 1))
-        ghg_proj.append(round(max(new_ghg, 0), 1))
-        wind_proj.append(round(new_wind, 1))
-        solar_proj.append(round(new_solar, 1))
-        elec_ren.append(round(min((new_wind + new_solar) / new_elec_total * 100, 100), 1))
+        # 2. Electrification shifts gas → electric
+        #    (only as much gas as remains)
+        electrified = ind_gas * (req.electrification_pct_per_yr / 100)
+        ind_gas     = max(ind_gas - electrified, 0.0)
+        ind_elec   += electrified
 
-    yrs   = np.array(b["mix_years"])
-    hist  = np.array(b["ren_share_series"])
-    slope = round(float(np.polyfit(yrs[-10:], hist[-10:], 1)[0]), 3)
+        # 3. Hydrogen replaces gas
+        h2_this_yr  = ind_gas * (req.hydrogen_pct_per_yr / 100)
+        ind_gas     = max(ind_gas - h2_this_yr, 0.0)
+        cumulative_h2 += h2_this_yr
 
-    ghg_yrs  = np.array(b["ghg_years"])
-    ghg_hist = np.array(b["ghg_series"])
-    ghg_slope = round(float(np.polyfit(ghg_yrs[-10:], ghg_hist[-10:], 1)[0]), 2)
+        # 4. Renewable generation grows
+        ren_gen += req.renewable_growth_tj_per_yr
+
+        # 5. Recalculate totals (efficiency also shrinks the gas/elec fractions)
+        ratio = ind_total / (ind_gas + ind_elec + 1e-9)  # should be ~1
+        ind_gas  *= ratio if ratio < 1 else 1.0
+        ind_elec *= ratio if ratio < 1 else 1.0
+
+        fossil = ind_gas + max(ind_elec - ren_gen, 0)  # elec covered by ren is clean
+        fossil_pct = max(fossil / ind_total * 100, 0.0) if ind_total > 0 else 0
+
+        years.append(BASELINE_YEAR + s)
+        total_l.append(round(ind_total, 0))
+        gas_l.append(round(ind_gas, 0))
+        elec_l.append(round(ind_elec, 0))
+        h2_l.append(round(cumulative_h2, 0))
+        ren_l.append(round(ren_gen, 0))
+        coverage_l.append(round(min(ren_gen / ind_total * 100, 100), 1) if ind_total > 0 else 100)
+        fossil_pct_l.append(round(fossil_pct, 1))
+
+    # Find milestone years
+    def _milestone(series: list[float], threshold: float) -> int | None:
+        for y, v in zip(years, series):
+            if v >= threshold:
+                return y
+        return None
+
+    def _fossil_milestone(series: list[float], threshold: float) -> int | None:
+        for y, v in zip(years, series):
+            if v <= threshold:
+                return y
+        return None
+
+    hist = _historical_coverage()
 
     return {
-        "baseline_year":          2024,
-        "horizon":                req.horizon,
-        "trend_ren_slope_pp_yr":  slope,
-        "trend_ghg_slope_mton_yr": ghg_slope,
-        "projection": {
-            "years":                    proj_years,
-            "renewable_share_pct":      ren_share,
-            "ghg_mton":                 ghg_proj,
-            "wind_pj":                  wind_proj,
-            "solar_pj":                 solar_proj,
-            "elec_renewable_share_pct": elec_ren,
+        "baseline": {
+            "ind_total_tj": IND_TOTAL_TJ,
+            "ind_gas_tj":   IND_GAS_TJ,
+            "ind_elec_tj":  IND_ELEC_TJ,
+            "ren_gen_tj":   REN_GEN_TJ,
+            "coverage_pct": round(REN_GEN_TJ / IND_TOTAL_TJ * 100, 1),
         },
-        "targets": {
-            "renewable_share_2030": 27.0,
-            "ghg_2030":             102.4,
-            "elec_renewable_2030":  70.0,
+        "historical": hist,
+        "years":        years,
+        "ind_total_tj": [round(v, 0) for v in total_l],
+        "ind_gas_tj":   [round(v, 0) for v in gas_l],
+        "ind_elec_tj":  [round(v, 0) for v in elec_l],
+        "ind_h2_tj":    [round(v, 0) for v in h2_l],
+        "ren_gen_tj":   [round(v, 0) for v in ren_l],
+        "coverage_pct": coverage_l,
+        "fossil_pct":   fossil_pct_l,
+        "milestones": {
+            "coverage_25pct": _milestone(coverage_l, 25),
+            "coverage_50pct": _milestone(coverage_l, 50),
+            "coverage_100pct": _milestone(coverage_l, 100),
+            "fossil_50pct":   _fossil_milestone(fossil_pct_l, 50),
+            "fossil_10pct":   _fossil_milestone(fossil_pct_l, 10),
         },
-        "on_track": {
-            "renewable":   ren_share[-1] >= 27.0,
-            "ghg":         ghg_proj[-1] <= 102.4,
-            "electricity": elec_ren[-1] >= 70.0,
-        },
+        "params": req.model_dump(),
     }
 
 
-@router.get("/required-pace")
-def required_pace():
-    """
-    How much annual change is needed in each metric to hit 2030 targets?
-    Compares required pace against recent trend.
-    """
-    b = _baselines()
-    years_left = 2030 - 2024
-
-    current_ren_share = b["ren_share_series"][-1]
-    required_ren_per_yr = round((27.0 - current_ren_share) / years_left, 2)
-
-    yrs  = np.array(b["mix_years"])
-    hist = np.array(b["ren_share_series"])
-    actual_ren_slope = round(float(np.polyfit(yrs[-5:], hist[-5:], 1)[0]), 3)
-
-    current_ghg = b["ghg"]
-    required_ghg_per_yr = round((current_ghg - 102.4) / years_left, 2)
-    ghg_yrs  = np.array(b["ghg_years"])
-    ghg_hist = np.array(b["ghg_series"])
-    actual_ghg_slope = round(float(np.polyfit(ghg_yrs[-5:], ghg_hist[-5:], 1)[0]), 2)
+@router.get("/gap-analysis")
+def gap_analysis():
+    """Summary of the Challenge 2 gap — used to frame the simulator."""
+    hist = _historical_coverage()
+    # Linear extrapolation of coverage at current pace
+    yrs  = np.array(hist["years"], dtype=float)
+    cov  = np.array(hist["coverage_pct"])
+    slope, intercept = np.polyfit(yrs, cov, 1)
+    year_50  = int((50  - intercept) / slope) if slope > 0 else None
+    year_100 = int((100 - intercept) / slope) if slope > 0 else None
 
     return {
-        "renewable_share": {
-            "current":         round(current_ren_share, 1),
-            "target_2030":     27.0,
-            "required_pp_yr":  required_ren_per_yr,
-            "recent_pp_yr":    actual_ren_slope,
-            "on_track":        actual_ren_slope >= required_ren_per_yr,
-        },
-        "ghg": {
-            "current":            round(current_ghg, 1),
-            "target_2030":        102.4,
-            "required_mton_yr":  -required_ghg_per_yr,
-            "recent_mton_yr":     actual_ghg_slope,
-            "on_track":           actual_ghg_slope <= -required_ghg_per_yr,
-        },
+        "historical": hist,
+        "current_coverage_pct": round(REN_GEN_TJ / IND_TOTAL_TJ * 100, 1),
+        "ind_total_tj":  IND_TOTAL_TJ,
+        "ren_gen_tj":    REN_GEN_TJ,
+        "gap_tj":        round(IND_TOTAL_TJ - REN_GEN_TJ, 0),
+        "multiplier":    round(IND_TOTAL_TJ / REN_GEN_TJ, 1),
+        "trend_slope_pp_per_yr": round(float(slope), 3),
+        "bau_year_50pct":  year_50,
+        "bau_year_100pct": year_100,
     }

@@ -3,374 +3,438 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { EnergyChart } from '@/components/energy-chart';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { energyApi } from '@/hooks/use-energy-api';
+import { Skeleton } from '@/components/ui/skeleton';
 
-interface Challenge3Props {
-    ghg: number[];
-    ghgTarget: number[];
-    elecWind: number[];
-    elecSolar: number[];
-    elecYears: number[];
+// ── Types ─────────────────────────────────────────────────────────────────────
+
+interface GapAnalysis {
+    current_coverage_pct:   number;
+    ind_total_tj:           number;
+    ren_gen_tj:             number;
+    gap_tj:                 number;
+    multiplier:             number;
+    bau_year_50pct:         number | null;
+    bau_year_100pct:        number | null;
+    historical: {
+        years:        number[];
+        ind_tj:       number[];
+        ren_gen_tj:   number[];
+        coverage_pct: number[];
+    };
 }
-
-const MIX_YEARS = Array.from({ length: 35 }, (_, i) => 1990 + i);
 
 interface SimResult {
-    projection: {
-        years: number[];
-        renewable_share_pct: number[];
-        ghg_mton: number[];
-        elec_renewable_share_pct: number[];
+    years:          number[];
+    ind_total_tj:   number[];
+    ind_gas_tj:     number[];
+    ind_elec_tj:    number[];
+    ind_h2_tj:      number[];
+    ren_gen_tj:     number[];
+    coverage_pct:   number[];
+    fossil_pct:     number[];
+    milestones: {
+        coverage_25pct:  number | null;
+        coverage_50pct:  number | null;
+        coverage_100pct: number | null;
+        fossil_50pct:    number | null;
+        fossil_10pct:    number | null;
     };
-    on_track: { renewable: boolean; ghg: boolean; electricity: boolean };
 }
 
-export default function Challenge3({ ghg, ghgTarget, elecWind, elecSolar, elecYears }: Challenge3Props) {
-    const [windGrowth, setWindGrowth] = useState(12);
-    const [solarGrowth, setSolarGrowth] = useState(10);
-    const [gasReduction, setGasReduction] = useState(20);
-    const [simResult, setSimResult] = useState<SimResult | null>(null);
-    const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+// ── Shared UI ─────────────────────────────────────────────────────────────────
+
+function ChartSkeleton({ height = 260 }: { height?: number }) {
+    return <Skeleton className="w-full rounded-lg" style={{ height }} />;
+}
+
+function Insight({ color, children }: { color: 'blue' | 'amber' | 'emerald' | 'violet' | 'red'; children: React.ReactNode }) {
+    const styles: Record<string, string> = {
+        blue:    'border-blue-400 bg-blue-50 text-blue-900 dark:bg-blue-950 dark:text-blue-200 dark:border-blue-600',
+        amber:   'border-amber-400 bg-amber-50 text-amber-900 dark:bg-amber-950 dark:text-amber-200 dark:border-amber-600',
+        emerald: 'border-emerald-400 bg-emerald-50 text-emerald-900 dark:bg-emerald-950 dark:text-emerald-200 dark:border-emerald-600',
+        violet:  'border-violet-400 bg-violet-50 text-violet-900 dark:bg-violet-950 dark:text-violet-200 dark:border-violet-600',
+        red:     'border-red-400 bg-red-50 text-red-900 dark:bg-red-950 dark:text-red-200 dark:border-red-600',
+    };
+    return <div className={`mt-4 border-l-4 px-4 py-3 rounded-r-lg text-sm ${styles[color]}`}>{children}</div>;
+}
+
+function MilestoneChip({ label, year, good }: { label: string; year: number | null; good: boolean }) {
+    const cls = good
+        ? 'rounded-lg px-3 py-2 text-center bg-emerald-50 dark:bg-emerald-950 border border-emerald-200 dark:border-emerald-800'
+        : 'rounded-lg px-3 py-2 text-center bg-red-50 dark:bg-red-950 border border-red-200 dark:border-red-800';
+    return (
+        <div className={cls}>
+            <span className="text-xs text-muted-foreground block">{label}</span>
+            <span className={`text-xl font-bold ${good ? 'text-emerald-700 dark:text-emerald-300' : 'text-red-600 dark:text-red-400'}`}>
+                {year ?? '2060+'}
+            </span>
+        </div>
+    );
+}
+
+function Slider({
+    label, value, min, max, step, unit, description, color, onChange,
+}: {
+    label: string; value: number; min: number; max: number; step: number;
+    unit: string; description: string; color: string;
+    onChange: (v: number) => void;
+}) {
+    return (
+        <div className="space-y-2">
+            <div className="flex items-baseline justify-between">
+                <label className={`text-sm font-semibold ${color}`}>{label}</label>
+                <span className="text-lg font-bold tabular-nums">{value} {unit}</span>
+            </div>
+            <input
+                type="range" min={min} max={max} step={step} value={value}
+                onChange={e => onChange(Number(e.target.value))}
+                className="w-full"
+            />
+            <p className="text-xs text-muted-foreground">{description}</p>
+        </div>
+    );
+}
+
+// ── Page ──────────────────────────────────────────────────────────────────────
+
+const API = (import.meta as Record<string, Record<string, string>>).env?.VITE_API_URL ?? 'http://localhost:8090';
+
+export default function Challenge3() {
+    const [gap, setGap]         = useState<GapAnalysis | null>(null);
+    const [result, setResult]   = useState<SimResult | null>(null);
+    const [gapLoading, setGapLoading] = useState(true);
+
+    const [renGrowth,  setRenGrowth]  = useState(500);
+    const [electrify,  setElectrify]  = useState(1.0);
+    const [hydrogen,   setHydrogen]   = useState(0.5);
+    const [efficiency, setEfficiency] = useState(1.0);
+
+    const debounce = useRef<ReturnType<typeof setTimeout> | null>(null);
 
     useEffect(() => {
-        if (debounceRef.current) clearTimeout(debounceRef.current);
-        debounceRef.current = setTimeout(() => {
-            energyApi.c3
-                .simulate({ wind_growth: windGrowth, solar_growth: solarGrowth, gas_reduction: gasReduction })
-                .then((r) => setSimResult(r as SimResult))
+        fetch(`${API}/api/challenge-3/gap-analysis`)
+            .then(r => r.json())
+            .then(d => { setGap(d); setGapLoading(false); })
+            .catch(() => setGapLoading(false));
+    }, []);
+
+    useEffect(() => {
+        if (debounce.current) clearTimeout(debounce.current);
+        debounce.current = setTimeout(() => {
+            fetch(`${API}/api/challenge-3/simulate`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    renewable_growth_tj_per_yr: renGrowth,
+                    electrification_pct_per_yr: electrify,
+                    hydrogen_pct_per_yr:         hydrogen,
+                    efficiency_pct_per_yr:       efficiency,
+                    horizon: 2060,
+                }),
+            })
+                .then(r => r.json())
+                .then(d => setResult(d as SimResult))
                 .catch(() => null);
-        }, 180);
-        return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
-    }, [windGrowth, solarGrowth, gasReduction]);
+        }, 200);
+        return () => { if (debounce.current) clearTimeout(debounce.current); };
+    }, [renGrowth, electrify, hydrogen, efficiency]);
 
-    const projection = simResult?.projection.renewable_share_pct ?? [];
-    const projectedRenewable2030 = projection[projection.length - 1] ?? 0;
-    const projectedGhg2030 = simResult?.projection.ghg_mton?.[simResult.projection.ghg_mton.length - 1] ?? null;
+    const m = result?.milestones;
+    const coverage2030 = result?.coverage_pct[6]  ?? null;
+    const coverage2040 = result?.coverage_pct[16] ?? null;
+    const coverage2050 = result?.coverage_pct[26] ?? null;
 
-    // Historical electricity renewable share (wind+solar as % of total elec)
-    const elecTotals = elecYears.map((_, i) => {
-        const w = elecWind[i] ?? 0;
-        const s = elecSolar[i] ?? 0;
-        return { w, s, total: w + s };
-    });
+    // ── Charts ────────────────────────────────────────────────────────────────
 
-    const projYears = simResult?.projection.years ?? [];
-    const projElecShare = simResult?.projection.elec_renewable_share_pct ?? [];
-
-    const scenarioConfig = useMemo(
-        () => ({
+    const histConfig = useMemo(() => {
+        if (!gap) return null;
+        return {
             type: 'line' as const,
             data: {
-                labels: [...elecYears.map(String), ...projYears.map(String)],
+                labels: gap.historical.years.map(String),
+                datasets: [{
+                    label: 'Hernieuwbaar dekt % van industrie',
+                    data: gap.historical.coverage_pct,
+                    borderColor: '#1D9E75', backgroundColor: 'rgba(29,158,117,0.12)',
+                    fill: true, tension: 0.3, pointRadius: 5, borderWidth: 2,
+                }],
+            },
+            options: {
+                responsive: true, maintainAspectRatio: false,
+                plugins: { legend: { display: false }, tooltip: { mode: 'index' as const, intersect: false } },
+                scales: { x: { ticks: { maxRotation: 0 } }, y: { min: 0, max: 15, title: { display: true, text: '%' } } },
+            },
+        };
+    }, [gap]);
+
+    const coverageConfig = useMemo(() => {
+        if (!result) return null;
+        return {
+            type: 'line' as const,
+            data: {
+                labels: result.years.map(String),
+                datasets: [{
+                    label: '% van industrieverbruik gedekt door hernieuwbaar',
+                    data: result.coverage_pct,
+                    borderColor: '#1D9E75', backgroundColor: 'rgba(29,158,117,0.12)',
+                    fill: true, tension: 0.3, pointRadius: 0, borderWidth: 2.5,
+                }],
+            },
+            options: {
+                responsive: true, maintainAspectRatio: false,
+                plugins: { legend: { display: false }, tooltip: { mode: 'index' as const, intersect: false } },
+                scales: {
+                    x: { ticks: { maxRotation: 0, maxTicksLimit: 8 } },
+                    y: { min: 0, max: 105, title: { display: true, text: '%' } },
+                },
+            },
+        };
+    }, [result]);
+
+    const mixConfig = useMemo(() => {
+        if (!result) return null;
+        const renAsElec  = result.years.map((_, i) => Math.min(result.ren_gen_tj[i], result.ind_elec_tj[i]));
+        const fossilElec = result.years.map((_, i) => Math.max(result.ind_elec_tj[i] - result.ren_gen_tj[i], 0));
+        return {
+            type: 'bar' as const,
+            data: {
+                labels: result.years.map(String),
                 datasets: [
-                    {
-                        label: 'Hernieuwbaar elektriciteit (historisch, %)',
-                        data: [
-                            ...elecTotals.map(({ w, s }, i) => {
-                                const gas = [189, 195.9, 198.5, 202.2, 217.8, 209.5, 205.5, 219.2, 232.4, 246.6, 264.9, 244.6, 194.6, 194.5, 183.6, 164.9, 189.1, 207.8, 207.5, 254.6, 261.1, 204.1, 171.9, 165.4, 159.3];
-                                const coal = [84.3, 89.7, 89.8, 93.2, 87.9, 83, 83.3, 88.6, 81.1, 84.4, 78.8, 74.8, 87.2, 88.4, 103.5, 141.8, 132.5, 113, 99.3, 63.7, 27.4, 52.6, 53.3, 31.4, 27];
-                                const nuclear = [14.1, 14.3, 14.1, 14.5, 13.8, 14.4, 12.5, 15.1, 15, 15.3, 14.3, 14.9, 14.1, 10.4, 14.7, 14.7, 14.3, 12.2, 12.7, 14.1, 14.7, 13.8, 15, 14.3, 12.9];
-                                const biomass = [7.2, 8.5, 10.5, 9.2, 12, 19, 18.7, 14.5, 18.3, 22, 25.4, 25.5, 25.9, 21.4, 18, 17.8, 17.7, 16.6, 16.4, 21, 31.8, 39.3, 35.4, 27.4, 24];
-                                const tot = w + s + (gas[i] ?? 0) + (coal[i] ?? 0) + (nuclear[i] ?? 0) + (biomass[i] ?? 0);
-                                return tot > 0 ? +((w + s) / tot * 100).toFixed(1) : 0;
-                            }),
-                            ...new Array(projYears.length).fill(null),
-                        ],
-                        borderColor: '#1D9E75',
-                        backgroundColor: 'rgba(29,158,117,0.08)',
-                        fill: true,
-                        tension: 0.3,
-                        pointRadius: 2,
-                        borderWidth: 2,
-                    },
-                    {
-                        label: 'Projectie scenario (API)',
-                        data: [...new Array(elecYears.length).fill(null), ...projElecShare],
-                        borderColor: '#378ADD',
-                        borderDash: [7, 4],
-                        borderWidth: 2,
-                        fill: false,
-                        tension: 0.3,
-                        pointRadius: 2,
-                    },
-                    {
-                        label: 'Doelstelling 70%',
-                        data: new Array(elecYears.length + projYears.length).fill(70),
-                        borderColor: '#E24B4A',
-                        borderDash: [4, 4],
-                        borderWidth: 1.5,
-                        fill: false,
-                        pointRadius: 0,
-                    },
+                    { label: 'Aardgas (fossiel)',          data: result.ind_gas_tj, backgroundColor: 'rgba(251,146,60,0.85)', borderWidth: 0 },
+                    { label: 'Elektriciteit (fossiel)',    data: fossilElec,         backgroundColor: 'rgba(95,94,90,0.70)',   borderWidth: 0 },
+                    { label: 'Elektriciteit (hernieuwb.)', data: renAsElec,          backgroundColor: 'rgba(55,138,221,0.80)', borderWidth: 0 },
+                    { label: 'Groene waterstof',           data: result.ind_h2_tj,   backgroundColor: 'rgba(139,92,246,0.85)', borderWidth: 0 },
                 ],
             },
             options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                plugins: { legend: { display: false }, tooltip: { mode: 'index' as const, intersect: false } },
+                responsive: true, maintainAspectRatio: false,
+                plugins: {
+                    legend: { display: true, position: 'bottom' as const, labels: { boxWidth: 12, font: { size: 10 } } },
+                    tooltip: { mode: 'index' as const, intersect: false },
+                },
                 scales: {
-                    x: { ticks: { autoSkip: true, maxTicksLimit: 11, maxRotation: 0 } },
-                    y: { min: 0, max: 100, title: { display: true, text: '% hernieuwbaar elektriciteit' } },
+                    x: { stacked: true, ticks: { maxRotation: 0, maxTicksLimit: 8 } },
+                    y: { stacked: true, title: { display: true, text: 'TJ' } },
                 },
             },
-        }),
-        [elecYears, elecTotals, projYears, projElecShare],
-    );
+        };
+    }, [result]);
 
-    const ghgConfig = useMemo(
-        () => ({
+    const gapConfig = useMemo(() => {
+        if (!result) return null;
+        return {
             type: 'line' as const,
             data: {
-                labels: MIX_YEARS.map(String),
+                labels: result.years.map(String),
                 datasets: [
-                    {
-                        label: 'Werkelijke uitstoot',
-                        data: ghg,
-                        borderColor: '#E24B4A',
-                        backgroundColor: 'rgba(226,75,74,0.10)',
-                        fill: true,
-                        tension: 0.3,
-                        pointRadius: 2,
-                    },
-                    {
-                        label: 'Vereist tempo',
-                        data: ghgTarget,
-                        borderColor: '#1D9E75',
-                        borderDash: [7, 4],
-                        borderWidth: 2,
-                        fill: false,
-                        pointRadius: 0,
-                    },
+                    { label: 'Industrieel verbruik (TJ)', data: result.ind_total_tj, borderColor: '#ea580c', backgroundColor: 'rgba(251,146,60,0.08)', fill: true, tension: 0.3, pointRadius: 0, borderWidth: 2 },
+                    { label: 'Hernieuwbare opwek (TJ)',   data: result.ren_gen_tj,   borderColor: '#1D9E75', backgroundColor: 'rgba(29,158,117,0.20)',   fill: true, tension: 0.3, pointRadius: 0, borderWidth: 2 },
                 ],
             },
             options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                plugins: { legend: { display: false }, tooltip: { mode: 'index' as const, intersect: false } },
+                responsive: true, maintainAspectRatio: false,
+                plugins: {
+                    legend: { display: true, position: 'bottom' as const, labels: { boxWidth: 12, font: { size: 11 } } },
+                    tooltip: { mode: 'index' as const, intersect: false },
+                },
                 scales: {
-                    x: { ticks: { autoSkip: true, maxTicksLimit: 9, maxRotation: 0 } },
-                    y: { min: 80, max: 260, title: { display: true, text: 'Mton CO₂-eq' } },
+                    x: { ticks: { maxRotation: 0, maxTicksLimit: 8 } },
+                    y: { title: { display: true, text: 'TJ' } },
                 },
             },
-        }),
-        [ghg, ghgTarget],
-    );
+        };
+    }, [result]);
 
-    const statusCards = [
-        { target: 'GHG −55% vs 1990', current: '−36% (144.8 Mton)', goal: '≤102 Mton', badge: 'Bijna op koers', badgeClass: 'bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200' },
-        { target: 'Renewable energy share', current: '15.5%', goal: '~27% EU target', badge: 'Achterstand', badgeClass: 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200' },
-        { target: 'Renewable electricity', current: '49.9%', goal: '70%', badge: 'Bijna op koers', badgeClass: 'bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200' },
-        { target: 'Coal phaseout', current: '173 PJ', goal: '0 PJ by 2030', badge: 'Op koers', badgeClass: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900 dark:text-emerald-200' },
-    ];
-
-    const policyCards = [
-        {
-            title: 'Offshore wind',
-            body: 'Triple deployment pace. 21 GW by 2031 requires consistent permitting and grid connections. Current pace: ~1.5 GW/yr. Required: ~3 GW/yr.',
-        },
-        {
-            title: 'Grid infrastructure',
-            body: 'Current congestion blocks renewable integration in the Netherlands. Priority grid expansion is the single biggest near-term bottleneck.',
-        },
-        {
-            title: 'Heat & industry',
-            body: 'Transport and heating remain 84% fossil-dependent. Electrification, green hydrogen, and industrial heat pumps are essential. No credible plan yet for most industrial processes.',
-        },
-    ];
-
+    // ── Render ────────────────────────────────────────────────────────────────
     return (
         <>
-            <Head title="Challenge 3 — 2030 Target Tracker" />
-
+            <Head title="Challenge 3 — Industriekloof" />
             <div className="flex flex-col gap-6 p-4">
+
                 {/* Header */}
-                <Card>
+                <Card className="border-violet-200 dark:border-violet-900">
                     <CardContent className="pt-6">
-                        <div className="mb-3">
-                            <Badge variant="secondary">Challenge 3 · Advanced</Badge>
+                        <div className="mb-3 flex flex-wrap gap-2">
+                            <Badge variant="secondary">Challenge 3 · Intermediate–Advanced</Badge>
+                            <Badge className="bg-violet-100 text-violet-800 dark:bg-violet-900 dark:text-violet-200 border-0">Scenario simulator</Badge>
+                            <Badge variant="outline">Antwoord op Challenge 2</Badge>
                         </div>
-                        <h1 className="text-2xl font-bold text-foreground mb-2">2030 Target Tracker</h1>
-                        <p className="text-muted-foreground">
-                            Is Nederland op koers voor de klimaatdoelstellingen van 2030? Gebruik de
-                            scenarioverkenner hieronder om verschillende transitiepaden te simuleren.
+                        <h1 className="text-2xl font-bold text-foreground mb-2">
+                            De industriekloof dichten — wanneer en hoe?
+                        </h1>
+                        <p className="text-muted-foreground max-w-3xl">
+                            Challenge 2 toonde de kloof: Zeeuwse industrie verbruikt ~75 PJ/jaar terwijl alle
+                            hernieuwbare opwek samen slechts 7 PJ levert — 10× te weinig. Bij huidig tempo
+                            bereikt de dekking de 50%-grens pas in <strong>{gap?.bau_year_50pct ?? '2107'}</strong>.
+                            Stel hieronder in hoe ambitieus Zeeland en de industrie investeren.
                         </p>
                     </CardContent>
                 </Card>
 
-                {/* Status cards */}
-                <div className="grid grid-cols-2 xl:grid-cols-4 gap-4">
-                    {statusCards.map(({ target, current, goal, badge, badgeClass }) => (
-                        <Card key={target}>
-                            <CardContent className="pt-4 pb-4">
-                                <p className="text-xs text-muted-foreground mb-1">{target}</p>
-                                <p className="text-xl font-bold text-foreground">{current}</p>
-                                <p className="text-xs text-muted-foreground mt-1">Doel: {goal}</p>
-                                <span className={`mt-2 inline-block rounded-full px-2 py-0.5 text-xs font-medium ${badgeClass}`}>
-                                    {badge}
-                                </span>
-                            </CardContent>
-                        </Card>
-                    ))}
-                </div>
+                {/* Starting point */}
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                    <Card>
+                        <CardHeader>
+                            <CardTitle>Historische dekking 2010–2024 (%)</CardTitle>
+                            <p className="text-sm text-muted-foreground">Hernieuwbaar als % van industrieel verbruik · startpunt voor de simulator</p>
+                        </CardHeader>
+                        <CardContent>
+                            {histConfig ? <EnergyChart config={histConfig} height={220} /> : <ChartSkeleton height={220} />}
+                        </CardContent>
+                    </Card>
 
-                {/* GHG historical chart */}
-                <Card>
-                    <CardHeader>
-                        <CardTitle>Greenhouse gas emissions vs 2030 target pathway</CardTitle>
-                        <p className="text-sm text-muted-foreground">
-                            Mton CO₂-equivalent — CBS Tabel 6a + Klimaatakkoord −55% target
-                        </p>
-                    </CardHeader>
-                    <CardContent>
-                        <div className="flex flex-wrap gap-4 text-xs text-muted-foreground mb-3">
-                            <span className="flex items-center gap-1.5">
-                                <span className="w-3 h-3 rounded-sm inline-block" style={{ background: '#E24B4A' }} />
-                                Werkelijke uitstoot
-                            </span>
-                            <span className="flex items-center gap-1.5">
-                                <span className="w-6 border-t-2 border-dashed inline-block" style={{ borderColor: '#1D9E75' }} />
-                                <span className="ml-1">Vereist tempo</span>
-                            </span>
-                        </div>
-                        <EnergyChart config={ghgConfig} height={280} />
-                    </CardContent>
-                </Card>
-
-                {/* Scenario explorer */}
-                <Card>
-                    <CardHeader>
-                        <CardTitle>Interactive scenario explorer</CardTitle>
-                        <p className="text-sm text-muted-foreground">
-                            Pas de schuifregelaars aan om verschillende transitiescenario's te verkennen.
-                        </p>
-                    </CardHeader>
-                    <CardContent>
-                        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                            {/* Sliders */}
-                            <div className="space-y-6">
-                                {[
-                                    {
-                                        label: 'Annual wind growth (PJ/yr)',
-                                        value: windGrowth,
-                                        setter: setWindGrowth,
-                                        min: 0,
-                                        max: 30,
-                                    },
-                                    {
-                                        label: 'Annual solar growth (PJ/yr)',
-                                        value: solarGrowth,
-                                        setter: setSolarGrowth,
-                                        min: 0,
-                                        max: 30,
-                                    },
-                                    {
-                                        label: 'Annual gas reduction (PJ/yr)',
-                                        value: gasReduction,
-                                        setter: setGasReduction,
-                                        min: 0,
-                                        max: 80,
-                                    },
-                                ].map(({ label, value, setter, min, max }) => (
-                                    <div key={label}>
-                                        <div className="flex justify-between mb-1">
-                                            <label className="text-sm font-medium text-foreground">{label}</label>
-                                            <span className="text-sm font-bold text-foreground">{value}</span>
+                    <Card>
+                        <CardHeader><CardTitle>Situatie bij ongewijzigd beleid</CardTitle></CardHeader>
+                        <CardContent>
+                            {gapLoading ? <Skeleton className="h-32 w-full" /> : gap && (
+                                <>
+                                    <div className="grid grid-cols-3 gap-3">
+                                        <div className="rounded-lg bg-muted px-3 py-2 text-center">
+                                            <p className="text-xs text-muted-foreground">Dekking 2024</p>
+                                            <p className="text-2xl font-bold text-orange-600 dark:text-orange-400">{gap.current_coverage_pct}%</p>
                                         </div>
-                                        <input
-                                            type="range"
-                                            min={min}
-                                            max={max}
-                                            value={value}
-                                            onChange={(e) => setter(Number(e.target.value))}
-                                            className="w-full accent-emerald-600"
-                                        />
-                                        <div className="flex justify-between text-xs text-muted-foreground mt-0.5">
-                                            <span>{min}</span>
-                                            <span>{max}</span>
+                                        <div className="rounded-lg bg-muted px-3 py-2 text-center">
+                                            <p className="text-xs text-muted-foreground">50% bij BAU</p>
+                                            <p className="text-2xl font-bold text-red-600 dark:text-red-400">{gap.bau_year_50pct ?? '2100+'}</p>
+                                        </div>
+                                        <div className="rounded-lg bg-muted px-3 py-2 text-center">
+                                            <p className="text-xs text-muted-foreground">Kloof (PJ)</p>
+                                            <p className="text-2xl font-bold text-red-600 dark:text-red-400">{Math.round(gap.gap_tj / 1000)} PJ</p>
                                         </div>
                                     </div>
-                                ))}
+                                    <Insight color="red">
+                                        <strong>BAU = falen:</strong> Bij het huidige groeitempo bereikt de hernieuwbare
+                                        dekking pas in <strong>{gap.bau_year_50pct ?? '2107'}</strong> de 50%-grens.
+                                        Pas de levers hieronder aan om te zien wat nodig is voor een realistisch pad.
+                                    </Insight>
+                                </>
+                            )}
+                        </CardContent>
+                    </Card>
+                </div>
 
-                                <div className="grid grid-cols-2 gap-3 pt-2">
-                                    <Card>
-                                        <CardContent className="pt-3 pb-3">
-                                            <p className="text-xs text-muted-foreground mb-0.5">
-                                                Projected renewable 2030
-                                            </p>
-                                            <p
-                                                className={`text-xl font-bold ${
-                                                    !simResult ? 'text-muted-foreground' :
-                                                    simResult.on_track.renewable
-                                                        ? 'text-emerald-600 dark:text-emerald-400'
-                                                        : 'text-red-600 dark:text-red-400'
-                                                }`}
-                                            >
-                                                {simResult ? `${projectedRenewable2030}%` : '…'}
-                                            </p>
-                                            <p className="text-xs text-muted-foreground">Doel: ≥27%</p>
-                                        </CardContent>
-                                    </Card>
-                                    <Card>
-                                        <CardContent className="pt-3 pb-3">
-                                            <p className="text-xs text-muted-foreground mb-0.5">
-                                                Projected GHG 2030
-                                            </p>
-                                            <p
-                                                className={`text-xl font-bold ${
-                                                    !simResult ? 'text-muted-foreground' :
-                                                    simResult.on_track.ghg
-                                                        ? 'text-emerald-600 dark:text-emerald-400'
-                                                        : 'text-red-600 dark:text-red-400'
-                                                }`}
-                                            >
-                                                {simResult && projectedGhg2030 !== null ? `${projectedGhg2030} Mt` : '…'}
-                                            </p>
-                                            <p className="text-xs text-muted-foreground">Doel: ≤102 Mton</p>
-                                        </CardContent>
-                                    </Card>
-                                </div>
-                            </div>
-
-                            {/* Projection chart */}
-                            <div className="lg:col-span-2">
-                                <div className="flex flex-wrap gap-3 text-xs text-muted-foreground mb-3">
-                                    <span className="flex items-center gap-1.5">
-                                        <span className="w-3 h-3 rounded-sm inline-block" style={{ background: '#1D9E75' }} />
-                                        Historisch aandeel
-                                    </span>
-                                    <span className="flex items-center gap-1.5">
-                                        <span className="w-6 border-t-2 border-dashed inline-block" style={{ borderColor: '#378ADD' }} />
-                                        <span className="ml-1">Projectie scenario</span>
-                                    </span>
-                                    <span className="flex items-center gap-1.5">
-                                        <span className="w-6 border-t-2 border-dashed inline-block" style={{ borderColor: '#E24B4A' }} />
-                                        <span className="ml-1">Doelstelling 70%</span>
-                                    </span>
-                                </div>
-                                <EnergyChart config={scenarioConfig} height={320} />
-                            </div>
+                {/* Levers */}
+                <Card className="border-violet-200 dark:border-violet-800">
+                    <CardHeader>
+                        <CardTitle>Stel de transitielevers in</CardTitle>
+                        <p className="text-sm text-muted-foreground">Pas elk lever aan — de grafieken updaten direct</p>
+                    </CardHeader>
+                    <CardContent>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                            <Slider label="Groei hernieuwbare opwek" value={renGrowth} min={0} max={5000} step={100} unit="TJ/jr"
+                                color="text-emerald-600 dark:text-emerald-400"
+                                description="Extra wind- en zonnecapaciteit per jaar (5.000 TJ ≈ 1.400 MW wind)"
+                                onChange={setRenGrowth} />
+                            <Slider label="Elektrificatiesnelheid industrie" value={electrify} min={0} max={5} step={0.5} unit="%/jr"
+                                color="text-blue-600 dark:text-blue-400"
+                                description="% resterende gasvraag dat jaarlijks wordt omgezet naar elektriciteit"
+                                onChange={setElectrify} />
+                            <Slider label="Groene waterstof substitutie" value={hydrogen} min={0} max={4} step={0.5} unit="%/jr"
+                                color="text-violet-600 dark:text-violet-400"
+                                description="% gasvraag dat jaarlijks vervangen wordt door groene waterstof (H₂)"
+                                onChange={setHydrogen} />
+                            <Slider label="Energie-efficiëntie verbetering" value={efficiency} min={0} max={3} step={0.5} unit="%/jr"
+                                color="text-amber-600 dark:text-amber-400"
+                                description="% jaarlijkse reductie van totale industriële energievraag"
+                                onChange={setEfficiency} />
                         </div>
                     </CardContent>
                 </Card>
 
-                {/* Policy recommendations */}
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                    {policyCards.map(({ title, body }, i) => (
-                        <Card key={title}>
-                            <CardContent className="pt-6">
-                                <div className="flex items-start gap-4">
-                                    <div className="w-8 h-8 rounded-full bg-foreground text-background flex items-center justify-center text-sm font-semibold flex-shrink-0">
-                                        {i + 1}
-                                    </div>
-                                    <div>
-                                        <h3 className="font-semibold text-foreground mb-1">{title}</h3>
-                                        <p className="text-sm text-muted-foreground">{body}</p>
-                                    </div>
+                {/* Milestones */}
+                {result && (
+                    <div>
+                        <p className="text-xs font-semibold text-muted-foreground tracking-widest uppercase mb-3">Mijlpalen met huidige instellingen</p>
+                        <div className="grid grid-cols-3 md:grid-cols-5 gap-3">
+                            {([
+                                { label: 'Dekking 2030', val: coverage2030, good: (coverage2030 ?? 0) >= 20 },
+                                { label: 'Dekking 2040', val: coverage2040, good: (coverage2040 ?? 0) >= 50 },
+                                { label: 'Dekking 2050', val: coverage2050, good: (coverage2050 ?? 0) >= 80 },
+                            ] as const).map(({ label, val, good }) => (
+                                <div key={label} className={`rounded-lg px-3 py-2 text-center ${good ? 'bg-emerald-50 dark:bg-emerald-950 border border-emerald-200 dark:border-emerald-800' : 'bg-muted'}`}>
+                                    <span className="text-xs text-muted-foreground block">{label}</span>
+                                    <span className={`text-2xl font-bold ${good ? 'text-emerald-700 dark:text-emerald-300' : 'text-foreground'}`}>{val?.toFixed(1)}%</span>
                                 </div>
-                            </CardContent>
-                        </Card>
-                    ))}
+                            ))}
+                            <MilestoneChip label="Bereikt 25%" year={m?.coverage_25pct ?? null} good={(m?.coverage_25pct ?? 9999) <= 2035} />
+                            <MilestoneChip label="Bereikt 50%" year={m?.coverage_50pct ?? null} good={(m?.coverage_50pct ?? 9999) <= 2045} />
+                        </div>
+                    </div>
+                )}
+
+                {/* Coverage projection */}
+                <Card>
+                    <CardHeader>
+                        <CardTitle>Hernieuwbare dekking van industrieverbruik — projectie 2024–2060 (%)</CardTitle>
+                        <p className="text-sm text-muted-foreground">Resultaat van jouw leverinstellingen</p>
+                    </CardHeader>
+                    <CardContent>
+                        {coverageConfig ? <EnergyChart config={coverageConfig} height={300} /> : <ChartSkeleton height={300} />}
+                        {result && m && (
+                            <Insight color={m.coverage_50pct && m.coverage_50pct <= 2045 ? 'emerald' : 'amber'}>
+                                {m.coverage_50pct && m.coverage_50pct <= 2045
+                                    ? <><strong>Op koers:</strong> Met deze instellingen bereikt Zeeland de 50%-drempel in <strong>{m.coverage_50pct}</strong>. Dit vereist politieke wil én industriële investeringsbereidheid op alle vier de levers tegelijk.</>
+                                    : <><strong>Niet op koers:</strong> De 50%-drempel wordt {m.coverage_50pct ? `pas in ${m.coverage_50pct}` : 'vóór 2060 niet'} gehaald. Zet meerdere levers hoger voor een realistisch klimaatpad.</>
+                                }
+                            </Insight>
+                        )}
+                    </CardContent>
+                </Card>
+
+                {/* Mix + gap */}
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                    <Card>
+                        <CardHeader>
+                            <CardTitle>Energiemix industrie — projectie (TJ)</CardTitle>
+                            <p className="text-sm text-muted-foreground">Gas (oranje) krimpt · blauw en paars nemen het over</p>
+                        </CardHeader>
+                        <CardContent>
+                            {mixConfig ? <EnergyChart config={mixConfig} height={280} /> : <ChartSkeleton height={280} />}
+                        </CardContent>
+                    </Card>
+
+                    <Card>
+                        <CardHeader>
+                            <CardTitle>De kloof — industrie vs opwek (TJ)</CardTitle>
+                            <p className="text-sm text-muted-foreground">Groen raakt oranje = kloof gedicht</p>
+                        </CardHeader>
+                        <CardContent>
+                            {gapConfig ? <EnergyChart config={gapConfig} height={280} /> : <ChartSkeleton height={280} />}
+                        </CardContent>
+                    </Card>
                 </div>
+
+                {/* Conclusions */}
+                <Card>
+                    <CardHeader><CardTitle>Wat leert de simulator?</CardTitle></CardHeader>
+                    <CardContent>
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                            {[
+                                {
+                                    title: '⚡ Elektrificatie is de hefboom',
+                                    body: 'Zet de elektrificatielever op 0% en geen enkele hoeveelheid extra opwek dicht de kloof snel — gas blijft domineren. Elektrificatie is de sleutelintervenetie: het verplaatst de gasvraag naar het elektriciteitsnet waar hernieuwbaar het kan overnemen.',
+                                    color: 'text-blue-600 dark:text-blue-400',
+                                },
+                                {
+                                    title: '🔬 Waterstof dicht wat elektriciteit niet kan',
+                                    body: 'Voor hoge-temperatuurprocessen en chemische feedstock is elektriciteit geen optie. Groene H₂ is de enige serieuze optie voor die resterende gasvraag. Zonder waterstof blijft er altijd een onoverbrugbare fossiele restpost.',
+                                    color: 'text-violet-600 dark:text-violet-400',
+                                },
+                                {
+                                    title: '📉 Efficiëntie krimpt het probleem',
+                                    body: 'Elke % minder energievraag maakt het dekkingsdoel proportioneel makkelijker. Efficiëntiemaatregelen zijn doorgaans goedkoper dan nieuwe opwekcapaciteit en worden systematisch onderschat in scenario\'s.',
+                                    color: 'text-amber-600 dark:text-amber-400',
+                                },
+                            ].map(({ title, body, color }) => (
+                                <div key={title} className="space-y-2">
+                                    <p className={`text-sm font-semibold ${color}`}>{title}</p>
+                                    <p className="text-xs text-muted-foreground leading-relaxed">{body}</p>
+                                </div>
+                            ))}
+                        </div>
+                    </CardContent>
+                </Card>
+
             </div>
         </>
     );
@@ -379,6 +443,6 @@ export default function Challenge3({ ghg, ghgTarget, elecWind, elecSolar, elecYe
 Challenge3.layout = {
     breadcrumbs: [
         { title: 'Dashboard', href: '/dashboard' },
-        { title: 'Challenge 3 — 2030 Target Tracker', href: '/challenges/3' },
+        { title: 'Challenge 3 — Industriekloof', href: '/challenges/3' },
     ],
 };
