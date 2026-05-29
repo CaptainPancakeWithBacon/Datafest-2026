@@ -1,7 +1,8 @@
 # Build stage: needs PHP (for wayfinder artisan call) + Node (for Vite)
 FROM php:8.4-cli-alpine AS build
-RUN apk add --no-cache nodejs npm sqlite sqlite-dev libpng-dev libjpeg-turbo-dev freetype-dev zlib-dev && \
-    docker-php-ext-install pdo pdo_sqlite gd
+RUN apk add --no-cache nodejs npm sqlite sqlite-dev \
+        libpng-dev libjpeg-turbo-dev freetype-dev zlib-dev libzip-dev && \
+    docker-php-ext-install pdo pdo_sqlite gd zip
 
 COPY --from=composer:latest /usr/bin/composer /usr/bin/composer
 
