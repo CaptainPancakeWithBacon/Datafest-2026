@@ -17,7 +17,14 @@ RUN npm install
 
 # Copy full app, then finish setup and build
 COPY . .
-RUN mkdir -p bootstrap/cache storage/framework/{sessions,views,cache} && \
+RUN mkdir -p bootstrap/cache \
+        storage/framework/{sessions,views,cache} \
+        storage/logs \
+        database \
+        resources/js/actions \
+        resources/js/routes \
+        resources/js/wayfinder && \
+    touch database/database.sqlite && \
     cp .env.example .env && \
     php artisan key:generate --no-interaction && \
     php artisan package:discover --ansi && \
