@@ -1,29 +1,48 @@
-const API_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:8090';
+const API = import.meta.env.VITE_API_URL ?? 'http://localhost:8090';
+
+async function get<T>(path: string): Promise<T> {
+    const r = await fetch(`${API}${path}`);
+    if (!r.ok) throw new Error(`API ${path} → ${r.status}`);
+    return r.json();
+}
+
+async function post<T>(path: string, body: unknown): Promise<T> {
+    const r = await fetch(`${API}${path}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+    });
+    if (!r.ok) throw new Error(`API ${path} → ${r.status}`);
+    return r.json();
+}
 
 export const energyApi = {
-    baseUrl: API_URL,
+    baseUrl: API,
 
-    async all() {
-        const r = await fetch(`${API_URL}/api/data/all`);
-        return r.json();
+    // ── Challenge 1 ───────────────────────────────────────────────────────────
+    c1: {
+        data:     ()           => get('/api/challenge-1/data'),
+        timelapse: (year: number) => get(`/api/challenge-1/timelapse?year=${year}`),
+        simulate: (params: { wind_growth: number; solar_growth: number; gas_reduction: number; horizon?: number }) =>
+            post('/api/challenge-1/simulate', { horizon: 2030, ...params }),
     },
 
-    async timelapse(year: number) {
-        const r = await fetch(`${API_URL}/api/timelapse?year=${year}`);
-        return r.json();
+    // ── Challenge 2 ───────────────────────────────────────────────────────────
+    c2: {
+        status:     () => get('/api/challenge-2/status'),
+        trends:     () => get('/api/challenge-2/trends'),
+        solarProxy: () => get('/api/challenge-2/solar-proxy'),
+        slopes:     () => get('/api/challenge-2/slopes'),
+        projection: () => get('/api/challenge-2/projection'),
     },
 
-    async simulate(params: {
-        wind_growth: number;
-        solar_growth: number;
-        gas_reduction: number;
-        horizon?: number;
-    }) {
-        const r = await fetch(`${API_URL}/api/simulate`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ horizon: 2030, ...params }),
-        });
-        return r.json();
+    // ── Challenge 3 ───────────────────────────────────────────────────────────
+    c3: {
+        simulate: (params: { wind_growth: number; solar_growth: number; gas_reduction: number; horizon?: number }) =>
+            post('/api/challenge-3/simulate', { horizon: 2030, ...params }),
+        requiredPace: () => get('/api/challenge-3/required-pace'),
     },
 };
+
+// Keep the old flat simulate() for Challenge 3 backwards compat
+export const simulate = energyApi.c3.simulate;

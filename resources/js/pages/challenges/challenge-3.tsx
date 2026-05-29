@@ -35,9 +35,9 @@ export default function Challenge3({ ghg, ghgTarget, elecWind, elecSolar, elecYe
     useEffect(() => {
         if (debounceRef.current) clearTimeout(debounceRef.current);
         debounceRef.current = setTimeout(() => {
-            energyApi
+            energyApi.c3
                 .simulate({ wind_growth: windGrowth, solar_growth: solarGrowth, gas_reduction: gasReduction })
-                .then(setSimResult)
+                .then((r) => setSimResult(r as SimResult))
                 .catch(() => null);
         }, 180);
         return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
