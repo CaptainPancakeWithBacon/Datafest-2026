@@ -17,7 +17,8 @@ RUN npm install
 
 # Copy full app, then finish setup and build
 COPY . .
-RUN cp .env.example .env && \
+RUN mkdir -p bootstrap/cache storage/framework/{sessions,views,cache} && \
+    cp .env.example .env && \
     php artisan key:generate --no-interaction && \
     php artisan package:discover --ansi && \
     npm run build
