@@ -1,0 +1,15 @@
+node_modules
+vendor
+.git
+.claude
+.env
+storage/logs
+storage/framework/cache
+storage/framework/sessions
+storage/framework/views
+public/build
+public/hot
+bootstrap/cache
+database/*.sqlite
+database/*.sqlite-shm
+database/*.sqlite-wal
