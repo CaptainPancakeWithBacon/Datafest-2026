@@ -29,11 +29,12 @@ export const energyApi = {
 
     // ── Challenge 2 ───────────────────────────────────────────────────────────
     c2: {
-        status:     () => get('/api/challenge-2/status'),
-        trends:     () => get('/api/challenge-2/trends'),
-        solarProxy: () => get('/api/challenge-2/solar-proxy'),
-        slopes:     () => get('/api/challenge-2/slopes'),
-        projection: () => get('/api/challenge-2/projection'),
+        status:           () => get('/api/challenge-2/status'),
+        data:             () => get('/api/challenge-2/data'),
+        totalConsumption: () => get('/api/challenge-2/total-consumption'),
+        sectors:          () => get('/api/challenge-2/sectors'),
+        fossilVsRenewable: () => get('/api/challenge-2/fossil-vs-renewable'),
+        stedin:           () => get('/api/challenge-2/stedin/data'),
     },
 
     // ── Challenge 3 ───────────────────────────────────────────────────────────

@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from challenge_1 import router as c1_router
 from challenge_2 import router as c2_router
+from challenge_2_stedin import router as c2s_router
 from challenge_3 import router as c3_router
 
 app = FastAPI(title="Datafest 2026 Energy API", version="1.0.0")
@@ -21,6 +22,7 @@ app.add_middleware(
 
 app.include_router(c1_router)
 app.include_router(c2_router)
+app.include_router(c2s_router)
 app.include_router(c3_router)
 
 
