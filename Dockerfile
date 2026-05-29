@@ -18,7 +18,9 @@ RUN npm install
 # Copy full app, then finish setup and build
 COPY . .
 RUN mkdir -p bootstrap/cache \
-        storage/framework/{sessions,views,cache} \
+        storage/framework/sessions \
+        storage/framework/views \
+        storage/framework/cache \
         storage/logs \
         database \
         resources/js/actions \
