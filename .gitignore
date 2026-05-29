@@ -32,6 +32,9 @@ yarn-error.log
 /database/*.sqlite-shm
 /database/*.sqlite-wal
 
+__pycache__/
+*.pyc
+
 # AI tools
 .claude
 /.agents
