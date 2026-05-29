@@ -11,7 +11,6 @@ Laravel 13 + React + Inertia + Tailwind + shadcn/ui
 ```bash
 git clone git@github.com:CaptainPancakeWithBacon/Datafest-2026.git
 cd Datafest-2026
-cp .env.example .env
 docker compose up --build
 ```
 

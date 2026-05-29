@@ -3,7 +3,11 @@ services:
     build: .
     ports:
       - "8000:8000"
-    env_file: .env
+    environment:
+      APP_ENV: local
+      APP_DEBUG: true
+      APP_URL: http://localhost:8000
+      VITE_API_URL: http://localhost:8090
     volumes:
       - ./database:/app/database
     depends_on:
