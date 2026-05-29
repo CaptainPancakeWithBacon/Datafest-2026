@@ -23,10 +23,12 @@ Open **http://localhost:8000**. Migrations run automatically on start.
 
 **Prerequisites:** PHP 8.4, Composer, Node.js/npm.
 
-On Ubuntu/Debian, install the SQLite extension if missing:
+On Ubuntu/Debian, install the required PHP extensions if missing:
 ```bash
-sudo apt-get install -y php8.4-sqlite3
+sudo apt-get install -y php8.4-sqlite3 php8.4-zip
 ```
+
+On Windows (XAMPP/Laragon): enable `extension=zip` in your `php.ini`.
 
 Then:
 ```bash

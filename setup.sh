@@ -8,7 +8,8 @@ command -v php  >/dev/null || { echo "ERROR: php not found. Install php8.4 + php
 command -v composer >/dev/null || { echo "ERROR: composer not found"; exit 1; }
 command -v npm  >/dev/null || { echo "ERROR: npm not found"; exit 1; }
 
-php -m | grep -q pdo_sqlite || { echo "ERROR: pdo_sqlite extension missing. Run: sudo apt-get install -y php8.4-sqlite3"; exit 1; }
+php -m | grep -q pdo_sqlite || { echo "ERROR: pdo_sqlite missing. Run: sudo apt-get install -y php8.4-sqlite3"; exit 1; }
+php -m | grep -q zip       || echo "WARNING: ext-zip missing — app will run with hardcoded data. Run: sudo apt-get install -y php8.4-zip"
 
 # Env
 if [ ! -f .env ]; then

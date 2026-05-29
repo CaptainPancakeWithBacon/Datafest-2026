@@ -149,14 +149,26 @@ class EnergyDataService
             return $this->fallback();
         }
 
-        $wb = IOFactory::load($path);
+        if (! extension_loaded('zip')) {
+            logger()->warning('EnergyDataService: ext-zip not loaded, falling back to hardcoded data. Install php-zip to read the Excel file.');
 
-        return [
-            'mix' => $this->parseMix($wb),
-            'electricity' => $this->parseElectricity($wb),
-            'ghg' => $this->parseGhg($wb),
-            'final_by_sector' => $this->parseFinalBySector($wb),
-        ];
+            return $this->fallback();
+        }
+
+        try {
+            $wb = IOFactory::load($path);
+
+            return [
+                'mix' => $this->parseMix($wb),
+                'electricity' => $this->parseElectricity($wb),
+                'ghg' => $this->parseGhg($wb),
+                'final_by_sector' => $this->parseFinalBySector($wb),
+            ];
+        } catch (\Throwable $e) {
+            logger()->error('EnergyDataService: failed to parse Excel — '.$e->getMessage());
+
+            return $this->fallback();
+        }
     }
 
     private function sheetRows(Spreadsheet $wb, string $name): array
