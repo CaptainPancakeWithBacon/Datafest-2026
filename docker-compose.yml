@@ -6,3 +6,15 @@ services:
     env_file: .env
     volumes:
       - ./database:/app/database
+    depends_on:
+      - python-api
+
+  python-api:
+    build:
+      context: .
+      dockerfile: python-api/Dockerfile
+    ports:
+      - "8090:8090"
+    volumes:
+      - ./data:/data
+      - ./python-api:/app

@@ -17,6 +17,10 @@ if [ ! -f .env ]; then
 fi
 
 # PHP deps
+echo "==> pip install (Python API)"
+pip install -r python-api/requirements.txt --quiet --break-system-packages 2>/dev/null \
+  || pip install -r python-api/requirements.txt --quiet
+
 echo "==> composer install"
 composer install --no-interaction --quiet
 
