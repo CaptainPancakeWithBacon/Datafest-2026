@@ -44,6 +44,13 @@ COPY . .
 COPY --from=build /app/vendor ./vendor
 COPY --from=build /app/public/build ./public/build
 
+RUN mkdir -p bootstrap/cache \
+        storage/framework/sessions \
+        storage/framework/views \
+        storage/framework/cache \
+        storage/logs \
+        database
+
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
