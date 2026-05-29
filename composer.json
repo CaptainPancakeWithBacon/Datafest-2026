@@ -90,6 +90,11 @@
         ],
         "pre-package-uninstall": [
             "Illuminate\\Foundation\\ComposerScripts::prePackageUninstall"
+        ],
+        "post-install-cmd": [
+            "@php -r \"file_exists('.env') || copy('.env.example', '.env');\"",
+            "@php artisan key:generate --ansi --no-interaction",
+            "@php artisan migrate --force --ansi --no-interaction"
         ]
     },
     "extra": {

@@ -34,9 +34,12 @@ Then:
 ```bash
 git clone git@github.com:CaptainPancakeWithBacon/Datafest-2026.git
 cd Datafest-2026
-./setup.sh
+composer install
+npm install
 composer run dev
 ```
+
+`composer install` automatically copies `.env`, generates the app key, and runs migrations.
 
 Open **http://localhost:8000**.
 
