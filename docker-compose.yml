@@ -4,6 +4,7 @@ services:
     ports:
       - "8000:8000"
     environment:
+      APP_KEY: base64:E3pVieBdirU9AuYHf02isGGtjvkPZgcaRxrv2yp0nS4=
       APP_ENV: local
       APP_DEBUG: true
       APP_URL: http://localhost:8000
